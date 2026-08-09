@@ -1,0 +1,30 @@
+{
+  "name": "flash-sale-manager",
+  "version": "1.0.0",
+  "description": "A production-grade flash sale order management system",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ashitosh-Jadhav/flash-sale-manager.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Ashitosh-Jadhav/flash-sale-manager/issues"
+  },
+  "homepage": "https://github.com/Ashitosh-Jadhav/flash-sale-manager#readme",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mysql2": "^3.23.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
