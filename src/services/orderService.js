@@ -104,10 +104,13 @@ class OrderService {
   static async updateOrderStatus(orderId, newStatus) {
     const validTransitions = {
       pending: ['confirmed', 'cancelled'],
+      queued: ['processing', 'confirmed', 'failed', 'cancelled'],
+      processing: ['confirmed', 'failed'],
       confirmed: ['shipped', 'cancelled'],
       shipped: ['delivered'],
       delivered: [], // Terminal state
-      cancelled: []  // Terminal state
+      cancelled: [], // Terminal state
+      failed: ['queued'], // Can be retried
     };
 
     const order = await Order.findById(orderId);

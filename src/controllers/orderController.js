@@ -1,5 +1,6 @@
 const Order = require('../models/Order');
 const OrderService = require('../services/orderService');
+const AsyncOrderService = require('../services/asyncOrderService');
 const { BadRequestError } = require('../utils/errors');
 
 // ============================================
@@ -152,6 +153,68 @@ exports.updateOrderStatus = async (req, res, next) => {
       success: true,
       message: `Order status updated to ${status}`,
       data: updatedOrder
+    });
+
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Place a new order ASYNCHRONOUSLY via Redis queue
+ * @route   POST /api/orders/async
+ * @access  Public
+ */
+exports.createAsyncOrder = async (req, res, next) => {
+  try {
+    const { productId, customerName, customerEmail, quantity } = req.body;
+
+    if (!productId || !customerName || !customerEmail || quantity === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Please provide productId, customerName, customerEmail, and quantity'
+      });
+    }
+
+    const numericProductId = parseInt(productId, 10);
+    const numericQuantity = parseInt(quantity, 10);
+
+    if (isNaN(numericProductId) || numericProductId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'productId must be a valid positive integer'
+      });
+    }
+
+    if (isNaN(numericQuantity) || numericQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'quantity must be a valid integer greater than 0'
+      });
+    }
+
+    const idempotencyKey = req.headers['idempotency-key'] || null;
+
+    const { order, isExisting } = await AsyncOrderService.acceptOrder(
+      {
+        productId: numericProductId,
+        customerName,
+        customerEmail,
+        quantity: numericQuantity
+      },
+      idempotencyKey
+    );
+
+    // 202 Accepted: "We received your order. It will be processed shortly."
+    // NOT 201 Created — because the order is not fully confirmed yet.
+    const statusCode = isExisting ? 200 : 202;
+
+    res.status(statusCode).json({
+      success: true,
+      message: isExisting
+        ? 'Order already exists (idempotent return)'
+        : 'Order accepted for processing',
+      data: order
     });
 
   } catch (error) {
