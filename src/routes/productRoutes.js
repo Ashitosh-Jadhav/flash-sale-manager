@@ -1,17 +1,22 @@
 const express = require('express');
 const { createProduct, getProducts, getProductById } = require('../controllers/productController');
+const { authenticate, authorize } = require('../middleware/auth');
 
-// An Express router allows us to group related routes together
 const router = express.Router();
 
-// Route: POST /api/products
-// Maps the HTTP POST request to our createProduct controller function
-router.post('/', createProduct);
+// ============================================
+// Product Routes — Access Control Policy
+// ============================================
+// GET /api/products      → Public (anyone can browse products)
+// GET /api/products/:id  → Public (anyone can view a product)
+// POST /api/products     → Admin only (only admins create products)
+// ============================================
 
-// Route: GET /api/products
+// Public routes
 router.get('/', getProducts);
-
-// Route: GET /api/products/:id
 router.get('/:id', getProductById);
+
+// Admin-only routes
+router.post('/', authenticate, authorize('admin'), createProduct);
 
 module.exports = router;

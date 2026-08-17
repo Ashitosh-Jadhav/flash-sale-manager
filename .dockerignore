@@ -1,0 +1,47 @@
+# ============================================
+# .dockerignore
+# ============================================
+# WHY: Docker sends all files in the build context to the Docker daemon.
+# Without .dockerignore, it would send node_modules (300MB+), .git history,
+# test files, and documentation — making builds slow and images bloated.
+#
+# This file works EXACTLY like .gitignore but for Docker builds.
+# Files listed here are EXCLUDED from the Docker build context.
+
+# Dependencies — reinstalled inside the container via npm ci
+node_modules/
+
+# Environment files — secrets must NEVER be baked into images
+# They are supplied at RUNTIME via docker-compose.yml or -e flags
+.env
+.env.*
+
+# Git history — not needed inside the container
+.git/
+.gitignore
+
+# Documentation — not needed at runtime
+docs/
+*.md
+project.md
+README.md
+
+# Tests — not needed in production image
+tests/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (avoid recursive builds)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs
+logs/
+*.log

@@ -17,11 +17,46 @@
 const express = require('express');
 const productRoutes = require('./routes/productRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const authRoutes = require('./routes/authRoutes');
+const { generalLimiter } = require('./middleware/rateLimiter');
 
 // Create an Express application instance.
 // Think of this as creating a brand new web server object
 // that doesn't yet know any routes or rules.
 const app = express();
+
+// ============================================
+// Trust Proxy Configuration
+// ============================================
+// WHY: When Nginx sits in front of Express, the client IP that Express
+// sees is Nginx's IP (the Docker internal IP), NOT the real client.
+// Nginx sets X-Forwarded-For to the real client IP.
+//
+// 'trust proxy' = 1 means: "Trust the FIRST proxy hop."
+// With this enabled, req.ip reads from X-Forwarded-For instead of
+// the socket connection.
+//
+// SECURITY: We ONLY enable this because we control Nginx.
+// If we enabled this without a trusted proxy in front, any client
+// could spoof X-Forwarded-For to bypass IP-based rate limiting.
+//
+// We use an env var so it's only enabled in Docker (where Nginx exists).
+if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', parseInt(process.env.TRUST_PROXY, 10) || 1);
+}
+
+// Instance identification for load balancing verification
+const INSTANCE_ID = process.env.INSTANCE_ID || `api-${process.pid}`;
+
+// ============================================
+// Instance ID Header (Load Balancing Verification)
+// ============================================
+// Adds X-Instance-Id to EVERY response so we can verify Nginx
+// is distributing traffic across API replicas during testing.
+app.use((req, res, next) => {
+  res.setHeader('X-Instance-Id', INSTANCE_ID);
+  next();
+});
 
 // ============================================
 // Built-in Middleware
@@ -46,8 +81,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ============================================
+// Global Rate Limiter
+// ============================================
+// Applied to ALL /api/* routes as a safety net (100 req/min per IP).
+// Endpoint-specific limiters (login, register, order) are stricter
+// and applied separately in their route files.
+app.use('/api', generalLimiter);
+
+// ============================================
 // API Routes
 // ============================================
+app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 
@@ -68,6 +112,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     service: 'flash-sale-manager',
+    instance: INSTANCE_ID,
     timestamp: new Date().toISOString(),
   });
 });

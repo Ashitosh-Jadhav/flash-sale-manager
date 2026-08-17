@@ -32,7 +32,7 @@ class AsyncOrderService {
    * Returns immediately after queueing — does NOT wait for stock check
    */
   static async acceptOrder(orderData, idempotencyKey) {
-    const { productId, customerName, customerEmail, quantity } = orderData;
+    const { productId, customerName, customerEmail, quantity, userId } = orderData;
 
     // 1. Idempotency check (fast — uses an indexed unique column)
     if (idempotencyKey) {
@@ -79,6 +79,7 @@ class AsyncOrderService {
         totalPrice,
         status: 'queued',
         idempotencyKey,
+        userId,
       }, connection);
     } finally {
       connection.release();
@@ -110,6 +111,7 @@ class AsyncOrderService {
         totalPrice,
         status: 'queued',
         idempotencyKey,
+        userId,
       },
       isExisting: false,
     };

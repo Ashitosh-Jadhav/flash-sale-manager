@@ -53,9 +53,10 @@ exports.createOrder = async (req, res, next) => {
     const result = await OrderService.placeOrder(
       {
         productId: numericProductId,
-        customerName,
-        customerEmail,
-        quantity: numericQuantity
+        customerName: customerName || req.user.name,
+        customerEmail: customerEmail || req.user.email,
+        quantity: numericQuantity,
+        userId: req.user.id
       },
       idempotencyKey
     );
@@ -73,13 +74,20 @@ exports.createOrder = async (req, res, next) => {
 };
 
 /**
- * @desc    Get all orders
+ * @desc    Get orders (Admin sees all, Customer sees own)
  * @route   GET /api/orders
- * @access  Public
+ * @access  Private
  */
 exports.getOrders = async (req, res, next) => {
   try {
-    const orders = await Order.findAll();
+    let orders;
+    if (req.user.role === 'admin') {
+      // Admin can see all orders
+      orders = await Order.findAll();
+    } else {
+      // Customers only see their own orders
+      orders = await Order.findByUserId(req.user.id);
+    }
     res.status(200).json({
       success: true,
       count: orders.length,
@@ -91,9 +99,9 @@ exports.getOrders = async (req, res, next) => {
 };
 
 /**
- * @desc    Get a single order by ID
+ * @desc    Get a single order by ID (with ownership check)
  * @route   GET /api/orders/:id
- * @access  Public
+ * @access  Private (owner or admin)
  */
 exports.getOrderById = async (req, res, next) => {
   try {
@@ -111,6 +119,18 @@ exports.getOrderById = async (req, res, next) => {
       return res.status(404).json({
         success: false,
         error: `Order with ID ${id} not found`
+      });
+    }
+
+    // OBJECT-LEVEL AUTHORIZATION:
+    // A customer can only view their OWN orders.
+    // An admin can view ANY order.
+    // Without this check, any authenticated user could view
+    // any other user's order by guessing the ID.
+    if (req.user.role !== 'admin' && order.user_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. You can only view your own orders.'
       });
     }
 
@@ -198,9 +218,10 @@ exports.createAsyncOrder = async (req, res, next) => {
     const { order, isExisting } = await AsyncOrderService.acceptOrder(
       {
         productId: numericProductId,
-        customerName,
-        customerEmail,
-        quantity: numericQuantity
+        customerName: customerName || req.user.name,
+        customerEmail: customerEmail || req.user.email,
+        quantity: numericQuantity,
+        userId: req.user.id
       },
       idempotencyKey
     );

@@ -1,0 +1,231 @@
+# ============================================
+# Docker Compose — Flash Sale Manager (Phase 11)
+# ============================================
+# Architecture:
+#
+#                    Client (host machine)
+#                         │ port 80
+#                         ▼
+#                 ┌──────────────┐
+#                 │    Nginx     │
+#                 │ Reverse Proxy│
+#                 │Load Balancer │
+#                 └──────┬───────┘
+#                        │ round-robin
+#           ┌────────────┼────────────┐
+#           ▼            ▼            ▼
+#        api-1        api-2        api-3
+#           │            │            │
+#           └────────────┼────────────┘
+#                        ▼
+#                      Redis ◄──── Worker
+#                        │            │
+#                        └──────┬─────┘
+#                               ▼
+#                             MySQL
+#
+# Start:  docker compose up --build -d
+# Stop:   docker compose down
+# Logs:   docker compose logs -f api-1 api-2 api-3
+
+services:
+  # ============================================
+  # MySQL Database
+  # ============================================
+  mysql:
+    image: mysql:8.0
+    container_name: flash-sale-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: flash_sale_db
+      MYSQL_USER: flash_user
+      MYSQL_PASSWORD: flash_password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ============================================
+  # Redis (Queue + Rate Limiter)
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: flash-sale-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ============================================
+  # Nginx Reverse Proxy + Load Balancer
+  # ============================================
+  # WHY Nginx:
+  # 1. Distributes traffic across API replicas (horizontal scaling).
+  # 2. Hides internal architecture from clients (single entry point).
+  # 3. If one API crashes, Nginx routes traffic to healthy instances.
+  # 4. Handles SSL termination and connection management efficiently.
+  #
+  # LIMITATION: Nginx itself is a single point of failure in this setup.
+  # In production, you'd run multiple Nginx instances behind a cloud
+  # load balancer (AWS ALB, GCP LB) or use keepalived for failover.
+  nginx:
+    image: nginx:alpine
+    container_name: flash-sale-nginx
+    ports:
+      # Host port 80 → Nginx container port 80
+      # Clients access the application via http://localhost
+      - "80:80"
+    volumes:
+      # Mount our custom nginx.conf
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # :ro = read-only. Nginx should never modify its own config.
+    depends_on:
+      - api-1
+      - api-2
+      - api-3
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ============================================
+  # API Replicas (Horizontal Scaling)
+  # ============================================
+  # WHY 3 replicas:
+  # - Each Node.js instance is single-threaded (uses 1 CPU core).
+  # - 3 replicas = 3 cores utilized = ~3x HTTP handling capacity.
+  # - If one crashes, the other 2 continue serving traffic.
+  #
+  # WHY separate services (not `deploy: replicas: 3`):
+  # - Compose `deploy.replicas` only works with Swarm mode.
+  # - Explicit services give us named containers for debugging.
+  # - Each replica can have a unique INSTANCE_ID for tracing.
+  #
+  # IMPORTANT: All 3 replicas use the SAME image (built once).
+  # They do NOT have different Dockerfiles or source code.
+  # They are identical processes with different container names.
+
+  api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flash-sale-api-1
+    environment: &api-env
+      # YAML anchor (&api-env) — defines a reusable block.
+      # The other replicas use *api-env to inherit all env vars.
+      # This prevents copy-paste errors across 3 services.
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: flash_user
+      DB_PASSWORD: flash_password
+      DB_NAME: flash_sale_db
+      DB_CONNECTION_LIMIT: 10
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: docker-dev-jwt-secret-change-in-production-a3f8c92d1e5b7a4f
+      JWT_EXPIRES_IN: 24h
+      TRUST_PROXY: "1"
+      # ^^^ Tells Express to trust Nginx's X-Forwarded-For header.
+      # Without this, req.ip would be Nginx's internal Docker IP,
+      # and ALL requests would share one rate-limit bucket.
+      INSTANCE_ID: api-1
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+    # NOTE: No host port mapping!
+    # API replicas are NOT directly accessible from the host.
+    # All traffic goes through Nginx (port 80).
+    # This is a security best practice — don't expose internal services.
+
+  api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flash-sale-api-2
+    environment:
+      <<: *api-env
+      # YAML merge key (<<:) — inherits all values from &api-env.
+      # We only override INSTANCE_ID to identify this specific replica.
+      INSTANCE_ID: api-2
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  api-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flash-sale-api-3
+    environment:
+      <<: *api-env
+      INSTANCE_ID: api-3
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ============================================
+  # Background Worker
+  # ============================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: flash-sale-worker
+    command: ["node", "src/workers/orderWorker.js"]
+    environment:
+      NODE_ENV: development
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: flash_user
+      DB_PASSWORD: flash_password
+      DB_NAME: flash_sale_db
+      DB_CONNECTION_LIMIT: 5
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+
+networks:
+  flash-sale-net:
+    driver: bridge

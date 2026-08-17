@@ -69,7 +69,8 @@ class OrderService {
         quantity,
         totalPrice,
         status: 'confirmed', // Initial state
-        idempotencyKey
+        idempotencyKey,
+        userId: orderData.userId
       };
 
       const orderId = await Order.insert(insertData, connection);

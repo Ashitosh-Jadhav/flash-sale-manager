@@ -15,12 +15,12 @@ class Order {
    * @returns {number} The ID of the newly created order
    */
   static async insert(orderData, connection) {
-    const { productId, customerName, customerEmail, quantity, totalPrice, status, idempotencyKey } = orderData;
+    const { productId, customerName, customerEmail, quantity, totalPrice, status, idempotencyKey, userId } = orderData;
     
-    // We add idempotency_key to the insert statement
+    // We add idempotency_key and user_id to the insert statement
     const [result] = await connection.execute(
-      'INSERT INTO orders (product_id, customer_name, customer_email, quantity, total_price, status, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [productId, customerName, customerEmail, quantity, totalPrice, status || 'pending', idempotencyKey || null]
+      'INSERT INTO orders (product_id, customer_name, customer_email, quantity, total_price, status, idempotency_key, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [productId, customerName, customerEmail, quantity, totalPrice, status || 'pending', idempotencyKey || null, userId || null]
     );
     
     return result.insertId;
@@ -53,6 +53,19 @@ class Order {
   static async findById(id) {
     const [rows] = await pool.execute('SELECT * FROM orders WHERE id = ?', [id]);
     return rows[0] || null;
+  }
+
+  /**
+   * Find all orders belonging to a specific user
+   * @param {number} userId
+   * @returns {Array} List of orders
+   */
+  static async findByUserId(userId) {
+    const [rows] = await pool.execute(
+      'SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC',
+      [userId]
+    );
+    return rows;
   }
 }
 
