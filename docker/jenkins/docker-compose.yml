@@ -1,0 +1,71 @@
+# ============================================
+# Jenkins Docker Setup — Flash Sale Manager
+# ============================================
+# WHY Jenkins in Docker (not installed natively):
+#
+# 1. ISOLATION: Jenkins runs in its own container, separate from your
+#    Windows system. If something goes wrong, delete the container — your
+#    system is untouched.
+#
+# 2. REPRODUCIBILITY: This docker-compose file IS the installation guide.
+#    Any developer runs `docker compose up` and gets the exact same Jenkins.
+#    No "install Java 17, download Jenkins WAR, configure..." manual steps.
+#
+# 3. CONSISTENCY WITH OUR STACK: Our entire application already runs in Docker.
+#    Having Jenkins in Docker means everything is containerized.
+#
+# ALTERNATIVE APPROACHES (and why we didn't use them):
+# - Native Windows install: Requires Java, pollutes system, hard to reproduce.
+# - VM: Overhead of running a full OS just for Jenkins.
+# - Docker-in-Docker (DinD): Runs a Docker daemon INSIDE Jenkins container.
+#   Security nightmare and known to have caching/storage issues.
+#
+# OUR APPROACH: Docker Socket Mounting
+# We mount the HOST's Docker socket (/var/run/docker.sock) into Jenkins.
+# This lets Jenkins execute Docker commands that run on the HOST's Docker
+# daemon — not inside Jenkins. Same daemon that runs our application.
+#
+# SECURITY NOTE: Mounting the Docker socket gives Jenkins ROOT-equivalent
+# access to the host's Docker daemon. In production, use a dedicated
+# Jenkins agent with restricted permissions. For local learning, this is
+# acceptable and standard practice.
+
+services:
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    # WHY lts-jdk17:
+    # - LTS (Long Term Support) = stable, well-tested.
+    # - JDK17 = Jenkins requires Java. This image bundles it.
+    container_name: flash-sale-jenkins
+    user: root
+    # WHY root: Jenkins needs to access the Docker socket (owned by root).
+    # In production, you'd create a 'docker' group and add the jenkins user.
+    # For local development, running as root is simpler.
+    ports:
+      - "8080:8080"
+      # Jenkins web UI. Access at http://localhost:8080
+      - "50000:50000"
+      # JNLP agent port. Used if you connect external Jenkins agents.
+      # Not needed for our single-controller setup, but standard to expose.
+    volumes:
+      # Persist Jenkins data (jobs, plugins, config) across container restarts.
+      - jenkins-data:/var/jenkins_home
+      # Mount the Docker socket from the HOST into the Jenkins container.
+      # This is the key to making Jenkins able to build/run Docker images.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Skip the initial setup wizard (plugin selection screen).
+      # We'll install required plugins via the CLI or manually.
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=true"
+    networks:
+      - jenkins-net
+    restart: unless-stopped
+
+volumes:
+  jenkins-data:
+    # Named volume to persist Jenkins configuration, job history,
+    # plugins, and credentials across container restarts.
+
+networks:
+  jenkins-net:
+    driver: bridge
