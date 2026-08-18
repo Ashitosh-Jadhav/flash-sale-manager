@@ -46,9 +46,7 @@ if (process.env.TRUST_PROXY) {
 }
 
 // Instance identification for load balancing verification
-// Intentionally breaking the pipeline here:
-const INSTANCE_ID = process.env.INSTANCE_ID || `api-${process.pid}` // Missing semicolon doesn't break, let's do a real syntax error:
-THIS_IS_A_SYNTAX_ERROR_TO_BREAK_CI_PIPELINE();
+const INSTANCE_ID = process.env.INSTANCE_ID || `api-${process.pid}`;
 
 // ============================================
 // Instance ID Header (Load Balancing Verification)
