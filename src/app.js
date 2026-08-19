@@ -19,6 +19,10 @@ const productRoutes = require('./routes/productRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const authRoutes = require('./routes/authRoutes');
 const { generalLimiter } = require('./middleware/rateLimiter');
+const requestIdMiddleware = require('./middleware/requestId');
+const metricsMiddleware = require('./middleware/metricsMiddleware');
+const { register, queueDepth, dbActiveConnections } = require('./utils/metrics');
+const logger = require('./utils/logger');
 
 // Create an Express application instance.
 // Think of this as creating a brand new web server object
@@ -56,6 +60,57 @@ const INSTANCE_ID = process.env.INSTANCE_ID || `api-${process.pid}`;
 app.use((req, res, next) => {
   res.setHeader('X-Instance-Id', INSTANCE_ID);
   next();
+});
+
+// ============================================
+// Request ID Middleware
+// ============================================
+// Assigns a unique ID to every request for log correlation.
+// Must be registered BEFORE any logging or metrics middleware.
+app.use(requestIdMiddleware);
+
+// ============================================
+// Metrics Collection Middleware
+// ============================================
+// Records request count, duration, and active requests for Prometheus.
+// Must be registered BEFORE routes so it captures all requests.
+app.use(metricsMiddleware);
+
+// ============================================
+// Prometheus Metrics Endpoint
+// ============================================
+// Prometheus scrapes this endpoint every 15 seconds.
+// Returns all metrics in Prometheus text exposition format.
+// Placed BEFORE rate limiting — we never want to rate-limit Prometheus.
+app.get('/metrics', async (req, res) => {
+  try {
+    // Collect dynamic gauges before responding
+    // Queue depth: how many jobs are waiting in Redis
+    try {
+      const { createRedisClient } = require('./config/redis');
+      const metricsRedis = createRedisClient('metrics-probe');
+      const depth = await metricsRedis.llen('orders:pending');
+      queueDepth.set(depth);
+      await metricsRedis.quit();
+    } catch (e) {
+      // Redis unavailable — set queue depth to -1 to signal an issue
+      queueDepth.set(-1);
+    }
+
+    // DB pool stats
+    try {
+      const { pool } = require('./config/database');
+      const poolInfo = pool.pool;
+      if (poolInfo) {
+        dbActiveConnections.set(poolInfo._allConnections?.length || 0);
+      }
+    } catch (e) { /* ignore */ }
+
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+  } catch (err) {
+    res.status(500).end(err.message);
+  }
 });
 
 // ============================================
@@ -166,7 +221,13 @@ app.use((req, res) => {
 // 2. The error is logged for debugging
 // 3. Internal details are hidden in production
 app.use((err, req, res, next) => {
-  console.error('Unhandled Error:', err.message);
+  logger.error('Unhandled Error', {
+    requestId: req.requestId,
+    error: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+    method: req.method,
+    path: req.originalUrl,
+  });
 
   const statusCode = err.statusCode || 500;
 

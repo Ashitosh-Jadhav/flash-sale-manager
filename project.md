@@ -2768,3 +2768,197 @@ Our Declarative Pipeline (`Jenkinsfile`) consists of the following stages:
 **35. How would you handle a pipeline that takes 45 minutes to run?**
 *Answer:* Long pipelines kill developer productivity. I would parallelize independent stages (e.g., running unit tests and static checks simultaneously), heavily utilize caching (for Docker layers and `node_modules`), and split massive integration test suites into smaller, focused chunks.
 *Follow-up:* How do you configure parallel execution in a Jenkinsfile?
+
+---
+
+## 📅 Day 10 — August 19, 2026
+
+### Phase 13: Monitoring, Logging & Observability
+
+#### 🎯 Goal
+Make the Flash Sale Manager observable so we can diagnose bottlenecks, track errors, and monitor real-time system behavior under heavy load using Prometheus and Grafana.
+
+---
+
+#### Part 1: The Three Pillars of Observability
+1. **Metrics:** Numerical data measured over time (e.g., CPU %, Requests/sec). We use Prometheus. Answers *"What is happening?"*
+2. **Logs:** Discrete records of events (e.g., "User logged in"). We implemented structured JSON logging. Answers *"What happened?"*
+3. **Traces:** Connecting events across multiple services. We implemented `X-Request-Id` for correlation. Answers *"Where did the request spend its time?"*
+
+#### Part 2: The Four Golden Signals
+Our monitoring specifically targets the Golden Signals for web applications:
+- **Latency:** `http_request_duration_seconds` (Prometheus Histogram)
+- **Traffic:** `http_requests_total` (Prometheus Counter)
+- **Errors:** `http_requests_total{status="500"}`
+- **Saturation:** `redis_queue_depth` and `db_active_connections` (Prometheus Gauges)
+
+#### Part 3: Structured Logging & Request IDs
+- Replaced `console.log` with a custom logger that outputs strict JSON.
+- Why? JSON is parseable by aggregators (like Loki or Elasticsearch). You can search for `level="error" AND service="worker"`.
+- We assign a UUID (`X-Request-Id`) to every HTTP request. This ID is passed to logs, allowing us to correlate an API request with its corresponding background worker execution.
+
+#### Part 4: Prometheus (Pull Monitoring)
+- Prometheus is a time-series database. Every 15 seconds, it reaches out to the API and Worker containers and scrapes the `/metrics` endpoints.
+- We used `prom-client` to expose Node.js runtime metrics (GC, Event Loop lag) alongside our custom business metrics (Orders Created, Queue Depth).
+- We use the `instance` label to distinguish between `api-1`, `api-2`, and `api-3`, allowing us to spot if a single replica is failing.
+
+#### Part 5: Grafana Dashboard
+- Configured Grafana to connect to Prometheus and automatically load a "Flash Sale Manager" dashboard.
+- The dashboard visualizes the Golden Signals, per-instance API traffic, Redis queue backlog, Worker throughput, and infrastructure metrics (Node.js heap size).
+
+#### 📁 Files Created/Modified (Phase 13)
+
+| File | Purpose |
+|------|---------|
+| `src/utils/logger.js` | Structured JSON logging module |
+| `src/utils/metrics.js` | Prometheus metric definitions (Counters, Gauges, Histograms) |
+| `src/middleware/requestId.js` | Injects UUID into requests for correlation |
+| `src/middleware/metricsMiddleware.js` | Express middleware to track HTTP latency and traffic |
+| `src/workers/orderWorker.js` | Added metrics tracking and port 9091 HTTP server |
+| `docker/prometheus/prometheus.yml` | Prometheus scrape configuration |
+| `docker/grafana/provisioning/...` | Grafana automated setup and dashboard JSON |
+| `scratch/test_phase13.js` | Load script to generate traffic, 404s, and 429s for testing |
+
+---
+
+### 🎓 35 Technical Interview Questions — Observability & Monitoring
+
+**1. What is the difference between Monitoring and Observability?**
+*Answer:* Monitoring is looking at predefined metrics to know *when* something breaks. Observability is instrumenting the system deeply enough to ask arbitrary questions and figure out *why* it broke without deploying new code.
+*Follow-up:* Can you have monitoring without observability?
+
+**2. What are the three pillars of observability?**
+*Answer:* Metrics, Logs, and Traces.
+*Follow-up:* If you could only have one of the three during an incident, which would you choose and why?
+
+**3. Explain the Four Golden Signals.**
+*Answer:* Latency (time to serve a request), Traffic (demand/throughput), Errors (rate of failed requests), and Saturation (system utilization/queue depth).
+*Follow-up:* Why is Saturation a leading indicator of Latency?
+
+**4. Why did we choose a "Pull" monitoring system (Prometheus) over a "Push" system (StatsD)?**
+*Answer:* Pull is simpler for long-running services. If Prometheus crashes, the API doesn't care. If it were a Push system, the API would have to buffer metrics or deal with network timeouts when the monitoring server goes down.
+*Follow-up:* When is a Push system strictly necessary? (Hint: Serverless/Cron jobs)
+
+**5. What is the difference between a Prometheus Counter and a Gauge?**
+*Answer:* A Counter is a cumulative metric that only ever goes up (e.g., total HTTP requests). A Gauge is a metric that can go up and down (e.g., active connections, queue depth).
+*Follow-up:* Why should you never use a Gauge to count total errors?
+
+**6. How do you measure Latency in Prometheus?**
+*Answer:* Using a Histogram. It places request durations into predefined buckets (e.g., "how many requests took under 50ms?"). You then use PromQL (`histogram_quantile`) to calculate percentiles like p95 or p99.
+*Follow-up:* Why are average (mean) latencies misleading in web performance?
+
+**7. Why do we log in structured JSON instead of plain text?**
+*Answer:* JSON is machine-readable. Log aggregators can index JSON natively, allowing you to run complex queries like `find all logs where status=500 and responseTime > 1000ms`. Doing this with plain text requires complex, fragile Regex.
+*Follow-up:* What is the downside of JSON logging regarding human readability in a raw terminal?
+
+**8. What is a Request ID (or Correlation ID) and why is it critical?**
+*Answer:* A unique identifier attached to an incoming HTTP request. By including this ID in every log statement, you can trace a single request as it jumps from the API to the database to the background worker.
+*Follow-up:* How do you pass a Correlation ID between microservices?
+
+**9. In our `metricsMiddleware`, why do we normalize the route path (e.g., `/api/orders/1` to `/api/orders/:id`)?**
+*Answer:* To prevent "high cardinality" in Prometheus. If we tracked every unique URL as a separate metric label, an attacker hitting random URLs would generate millions of time-series, exhausting Prometheus memory and crashing the monitoring server.
+*Follow-up:* What is cardinality?
+
+**10. Why is the `/metrics` endpoint placed *before* the rate limiting middleware in Express?**
+*Answer:* Because Prometheus scrapes the endpoint every 15 seconds. If it were rate-limited, Prometheus would get 429 errors and we would lose visibility into the system precisely when we are being flooded with traffic.
+*Follow-up:* How do you secure the `/metrics` endpoint so public users can't see internal data?
+
+**11. Why shouldn't you log JWT tokens or passwords?**
+*Answer:* Logs are often shipped to third-party aggregators and accessed by developers who don't have production database access. Logging secrets violates compliance (GDPR, PCI, SOC2) and creates a massive security vulnerability.
+*Follow-up:* How do you sanitize logs dynamically?
+
+**12. If CPU is at 10% but API Latency is 5 seconds, what is the likely bottleneck?**
+*Answer:* The API is blocked waiting for external I/O (Database, Redis, or a 3rd party API) or the Node.js event loop is blocked by synchronous processing (like hashing passwords).
+*Follow-up:* How would you use metrics to prove it's the database?
+
+**13. What happens if the Redis queue depth is growing, but the Worker processing rate is flat?**
+*Answer:* The Worker is saturated. It is processing orders as fast as it can, but the ingress rate (from the API) is higher than the egress rate. We need to scale horizontally by adding more Worker instances.
+*Follow-up:* What metric would tell you if the Worker is waiting on MySQL?
+
+**14. What is PromQL?**
+*Answer:* Prometheus Query Language. It allows you to select and aggregate time-series data in real-time, such as calculating the 5-minute moving average of 5xx errors.
+*Follow-up:* What does `rate(http_requests_total[5m])` calculate?
+
+**15. Why are Prometheus and Grafana two separate tools?**
+*Answer:* Separation of concerns. Prometheus is the data storage and query engine. Grafana is a pure visualization layer that can connect to multiple different data sources simultaneously.
+*Follow-up:* Can you set up alerts in Prometheus, Grafana, or both?
+
+**16. What does `NODE_ENV=production` actually do in Express?**
+*Answer:* It tells Express to cache views, cache CSS files, and most importantly, it generates less verbose error messages (hiding stack traces from users) which improves performance and security.
+*Follow-up:* How does it affect logging?
+
+**17. What is the difference between a Liveness probe and a Readiness probe?**
+*Answer:* Liveness (`/health`) checks if the process is running; if it fails, the container is restarted. Readiness checks if the application is ready to handle traffic; if it fails, the load balancer stops sending traffic to it, but it doesn't restart.
+*Follow-up:* Why shouldn't a Liveness probe check the database connection?
+
+**18. If a Flash Sale causes `api-2` to run out of memory and crash, how will our metrics show it?**
+*Answer:* `api-2`'s `nodejs_heap_size_used_bytes` will spike until the crash. Then, Prometheus will report `up == 0` for that target. Traffic on `api-1` and `api-3` will immediately spike as Nginx shifts the load.
+*Follow-up:* What is an OOMKilled error in Docker?
+
+**19. How do we ensure Nginx distributes traffic evenly across API replicas?**
+*Answer:* By configuring Nginx upstream blocks with a Round-Robin algorithm and verifying it by checking the `X-Instance-Id` header (or by viewing the per-instance traffic graphs in Grafana).
+*Follow-up:* When would you use `least_conn` instead of Round-Robin?
+
+**20. What is Distributed Tracing (e.g., Jaeger, OpenTelemetry)?**
+*Answer:* A step beyond Request IDs. It creates "Spans" for every operation (e.g., a DB query, a Redis fetch) and links them together, providing a waterfall visualization of exactly where a request spent its time across a microservice architecture.
+*Follow-up:* Why didn't we implement Distributed Tracing in this project?
+
+**21. What does p99 latency mean?**
+*Answer:* The 99th percentile. It means 99% of requests were faster than this value, and 1% were slower. If p99 is 500ms, only 1 in 100 users experienced a wait time longer than half a second.
+*Follow-up:* Why is tracking p99 better than tracking the maximum latency?
+
+**22. How did we get metrics out of the background worker?**
+*Answer:* We spun up a lightweight HTTP server on port 9091 inside the worker process, exclusively to serve the `/metrics` endpoint for Prometheus to scrape.
+*Follow-up:* Does this block the worker's processing thread?
+
+**23. Why do we monitor the Node.js Event Loop Lag?**
+*Answer:* Because Node.js is single-threaded. If the event loop is blocked, Node cannot process incoming HTTP requests, causing latency to skyrocket even if CPU usage isn't at 100%.
+*Follow-up:* What function blocks the event loop: `JSON.parse` or `fs.readFile`?
+
+**24. In PromQL, what is a "Label"?**
+*Answer:* Key-value pairs attached to a metric. For `http_requests_total`, labels could be `method="GET"` and `status="200"`. They allow multi-dimensional data querying.
+*Follow-up:* How do you sum the request rate across all methods but group by status code?
+
+**25. If our database connection limit is 5, how does the `db_active_connections` Gauge help us during a flash sale?**
+*Answer:* It tells us our saturation point. If the gauge hits 5 and stays there, queries will start queuing internally in the `mysql2` pool, causing application latency to spike. This proves the database pool is the bottleneck.
+*Follow-up:* Why not just set the connection limit to 10,000?
+
+**26. Why do we use `process.hrtime.bigint()` for measuring duration instead of `Date.now()`?**
+*Answer:* `Date.now()` is subject to clock drift and NTP synchronization (it can actually jump backward). `process.hrtime` provides strictly monotonic, nanosecond-precision timing, which is required for accurate latency metrics.
+*Follow-up:* What is the performance overhead of calling `process.hrtime`?
+
+**27. What is an SLI and an SLO?**
+*Answer:* Service Level Indicator (SLI) is what you measure (e.g., p95 latency). Service Level Objective (SLO) is your target (e.g., "p95 latency will be < 200ms for 99% of requests over 30 days").
+*Follow-up:* What is an SLA?
+
+**28. If Nginx returns a 502 Bad Gateway, will it show up in our Express metrics?**
+*Answer:* No. A 502 means Nginx couldn't talk to Express at all. To track 502s, you must parse Nginx logs or use an Nginx Prometheus exporter.
+*Follow-up:* What does a 504 Gateway Timeout mean?
+
+**29. Why shouldn't you alert on CPU usage?**
+*Answer:* CPU usage is a symptom, not a user-facing problem. A server at 95% CPU that is successfully serving requests with low latency is highly efficient, not broken. You should alert on Golden Signals (Errors, Latency) instead.
+*Follow-up:* When *would* an infrastructure alert be useful?
+
+**30. What is "Alert Fatigue"?**
+*Answer:* When a monitoring system sends too many non-actionable alerts, engineers start ignoring them. Eventually, a real alert is missed. Alerts should only trigger when a human needs to take immediate action.
+*Follow-up:* How do you prevent alert fatigue?
+
+**31. How does Prometheus discover targets in Kubernetes compared to our Docker Compose setup?**
+*Answer:* In Docker Compose, we used `static_configs` to manually list `api-1`, `api-2`, etc. In Kubernetes, Prometheus uses Service Discovery to automatically find and scrape any Pod with specific annotations.
+*Follow-up:* What happens in our Compose setup if we scale to 4 APIs?
+
+**32. Explain what `histogram_quantile(0.95, ...)` does in PromQL.**
+*Answer:* It calculates the 95th percentile from a histogram bucket. Since Prometheus stores bucket counts, the quantile function mathematically estimates the percentile based on those bucket boundaries.
+*Follow-up:* Why must the bucket boundaries be identical across all instances?
+
+**33. If a request times out from the client's perspective, but the server successfully processes it, how do metrics show this?**
+*Answer:* The Express metrics will show a successful 200 OK. The client-side metrics (or Nginx metrics) will show a timeout. This discrepancy is why monitoring multiple layers of the stack is necessary.
+*Follow-up:* How does a Redis queue handle client timeouts?
+
+**34. Why do we need `app.use(metricsMiddleware)` defined *before* our route definitions in Express?**
+*Answer:* Express evaluates middleware in order. If the route definition handles the request and sends a response without calling `next()`, any middleware defined below it is never executed, meaning the metric would never be recorded.
+*Follow-up:* Where should the 404 handler be placed?
+
+**35. How would you design a dashboard for the CEO versus a dashboard for the SRE (Site Reliability Engineer)?**
+*Answer:* The CEO dashboard tracks business metrics: Orders placed, Revenue, Active Users. The SRE dashboard tracks technical metrics: CPU, Error Rates, Latency, Queue Depth.
+*Follow-up:* Should business logic be coupled with infrastructure monitoring?

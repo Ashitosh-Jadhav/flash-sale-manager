@@ -223,8 +223,48 @@ services:
       - flash-sale-net
     restart: unless-stopped
 
+  # ============================================
+  # Prometheus (Metrics Aggregation)
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: flash-sale-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ============================================
+  # Grafana (Metrics Visualization)
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: flash-sale-grafana
+    ports:
+      - "3001:3000" # Expose Grafana on port 3001
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
 volumes:
   mysql-data:
+  prometheus-data:
+  grafana-data:
 
 networks:
   flash-sale-net:

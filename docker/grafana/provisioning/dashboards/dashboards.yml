@@ -1,0 +1,10 @@
+# Grafana Dashboard Provisioning
+apiVersion: 1
+
+providers:
+  - name: 'Flash Sale'
+    orgId: 1
+    folder: 'Flash Sale Manager'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

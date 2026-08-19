@@ -1,0 +1,61 @@
+# ============================================
+# Prometheus Configuration — Flash Sale Manager
+# ============================================
+# Prometheus is a PULL-based monitoring system.
+# It scrapes /metrics endpoints at regular intervals
+# and stores the data as time-series.
+#
+# WHY PULL (not PUSH):
+# - The application doesn't need to know about Prometheus.
+# - If Prometheus is down, the app doesn't break.
+# - Prometheus controls the scrape rate, preventing flood.
+# - Discovery: Prometheus finds targets; targets don't register.
+
+global:
+  # How often Prometheus scrapes each target.
+  # 15s is standard for development. Production often uses 30s or 60s.
+  # Lower = more data points = more storage. Higher = less granular.
+  scrape_interval: 15s
+
+  # How often Prometheus evaluates alerting rules.
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ============================================
+  # API Instances (3 replicas)
+  # ============================================
+  # Each API replica exposes GET /metrics on port 3000.
+  # Prometheus scrapes all three and labels them distinctly
+  # so we can answer "Which instance has the highest error rate?"
+  - job_name: 'flash-sale-api'
+    # 'static_configs' lists targets manually.
+    # In Kubernetes, you'd use service discovery instead.
+    static_configs:
+      - targets:
+          - 'api-1:3000'
+          - 'api-2:3000'
+          - 'api-3:3000'
+        labels:
+          service: 'api'
+    # Prometheus automatically adds an 'instance' label
+    # with the target address (e.g., "api-1:3000").
+    # This lets us distinguish metrics from each replica.
+
+  # ============================================
+  # Worker
+  # ============================================
+  # The worker exposes metrics on port 9091 (a lightweight HTTP server).
+  - job_name: 'flash-sale-worker'
+    static_configs:
+      - targets:
+          - 'worker:9091'
+        labels:
+          service: 'worker'
+
+  # ============================================
+  # Prometheus Self-Monitoring
+  # ============================================
+  # Prometheus can monitor itself (meta-monitoring).
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

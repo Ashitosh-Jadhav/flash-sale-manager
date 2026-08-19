@@ -6,6 +6,31 @@ const { createRedisClient, QUEUE_NAME, DEAD_LETTER_QUEUE } = require('../config/
 const { pool } = require('../config/database');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
+const logger = require('../utils/logger');
+const http = require('http');
+const client = require('prom-client');
+
+// Worker metrics
+const workerRegister = new client.Registry();
+client.collectDefaultMetrics({ register: workerRegister, prefix: 'nodejs_', labels: { instance: 'worker' } });
+
+const workerJobDuration = new client.Histogram({
+  name: 'worker_job_duration_seconds',
+  help: 'Time to process a single worker job',
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  registers: [workerRegister],
+});
+const workerJobsTotal = new client.Counter({
+  name: 'worker_jobs_processed_total',
+  help: 'Total jobs processed by the worker',
+  labelNames: ['status'],
+  registers: [workerRegister],
+});
+const workerQueueDepth = new client.Gauge({
+  name: 'worker_queue_depth',
+  help: 'Number of jobs in the order queue',
+  registers: [workerRegister],
+});
 
 // ============================================
 // Order Worker (Redis Consumer)
@@ -58,7 +83,8 @@ async function processJob(rawMessage) {
   }
 
   const { orderId, productId, quantity } = job;
-  console.log(`[Worker] Processing order #${orderId} (product: ${productId}, qty: ${quantity})`);
+  logger.info('Processing order', { orderId, productId, quantity });
+  const jobStart = process.hrtime.bigint();
 
   const connection = await pool.getConnection();
 
@@ -75,7 +101,8 @@ async function processJob(rawMessage) {
         ['failed', orderId]
       );
       await connection.commit();
-      console.log(`[Worker] Order #${orderId} FAILED: Product ${productId} not found`);
+      logger.warn('Order failed: product not found', { orderId, productId });
+      workerJobsTotal.inc({ status: 'failed' });
       jobsFailed++;
       return;
     }
@@ -87,7 +114,8 @@ async function processJob(rawMessage) {
         ['failed', orderId]
       );
       await connection.commit();
-      console.log(`[Worker] Order #${orderId} FAILED: Insufficient stock (${product.stock} < ${quantity})`);
+      logger.warn('Order failed: insufficient stock', { orderId, stock: product.stock, requested: quantity });
+      workerJobsTotal.inc({ status: 'failed' });
       jobsFailed++;
       return;
     }
@@ -100,7 +128,8 @@ async function processJob(rawMessage) {
         ['failed', orderId]
       );
       await connection.commit();
-      console.log(`[Worker] Order #${orderId} FAILED: Stock decrement failed`);
+      logger.warn('Order failed: stock decrement failed', { orderId });
+      workerJobsTotal.inc({ status: 'failed' });
       jobsFailed++;
       return;
     }
@@ -113,7 +142,10 @@ async function processJob(rawMessage) {
 
     await connection.commit();
     jobsProcessed++;
-    console.log(`[Worker] Order #${orderId} CONFIRMED ✓ (processed: ${jobsProcessed}, failed: ${jobsFailed})`);
+    const durationSec = Number(process.hrtime.bigint() - jobStart) / 1e9;
+    workerJobDuration.observe(durationSec);
+    workerJobsTotal.inc({ status: 'confirmed' });
+    logger.info('Order confirmed', { orderId, jobsProcessed, jobsFailed, durationMs: Math.round(durationSec * 1000) });
 
   } catch (error) {
     await connection.rollback();
@@ -141,38 +173,47 @@ async function processJob(rawMessage) {
 }
 
 async function startWorker() {
-  console.log('='.repeat(50));
-  console.log('  Flash Sale Worker');
-  console.log('  Listening on queue:', QUEUE_NAME);
-  console.log('='.repeat(50));
+  logger.info('Worker starting', { queue: QUEUE_NAME });
+
+  // Start a tiny HTTP server so Prometheus can scrape worker metrics.
+  const metricsServer = http.createServer(async (req, res) => {
+    if (req.url === '/metrics') {
+      try {
+        const depth = await redis.llen(QUEUE_NAME);
+        workerQueueDepth.set(depth);
+      } catch (e) { /* ignore */ }
+      res.setHeader('Content-Type', workerRegister.contentType);
+      res.end(await workerRegister.metrics());
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  metricsServer.listen(9091, () => {
+    logger.info('Worker metrics server listening', { port: 9091 });
+  });
 
   while (!isShuttingDown) {
     try {
-      // BRPOP: Blocking Right Pop
-      // Waits up to 5 seconds for a message. If none arrives, returns null and loops.
-      // This is NOT polling — Redis holds the connection open efficiently.
-      // The 5-second timeout allows us to check isShuttingDown periodically.
       const result = await redis.brpop(QUEUE_NAME, 5);
 
       if (result) {
-        // result = [queueName, message]
         const [, message] = result;
         await processJob(message);
       }
-      // If result is null, BRPOP timed out — loop and try again
     } catch (error) {
       if (!isShuttingDown) {
-        console.error('[Worker] Error in main loop:', error.message);
-        // Wait 1 second before retrying to avoid tight error loops
+        logger.error('Worker main loop error', { error: error.message });
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
   }
 
-  console.log('[Worker] Shutting down gracefully...');
+  logger.info('Worker shutting down gracefully');
+  metricsServer.close();
   await redis.quit();
   await pool.end();
-  console.log('[Worker] Shutdown complete.');
+  logger.info('Worker shutdown complete');
   process.exit(0);
 }
 
@@ -181,3 +222,4 @@ process.on('SIGTERM', () => { isShuttingDown = true; });
 process.on('SIGINT', () => { isShuttingDown = true; });
 
 startWorker();
+
